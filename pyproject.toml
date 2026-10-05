@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]",
     "langgraph",
     "langchain-core",
+    "langchain-openai",
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
