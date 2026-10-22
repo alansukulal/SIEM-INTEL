@@ -32,7 +32,13 @@ Do not invent facts that are not present in the evidence.
     llm = LLMClient()
 
     response = llm.invoke(prompt)
+    if evidence:
+        needs_more_investigation=False
+
+    else:
+        needs_more_investigation=True
 
     return {
         "finding": response.content,
+        "needs_more_investigation":needs_more_investigation,
     }

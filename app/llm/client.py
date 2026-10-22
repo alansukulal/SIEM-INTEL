@@ -1,6 +1,12 @@
+from typing import TypeVar
+
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
 from app.config import settings
+
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class LLMClient:
@@ -13,3 +19,11 @@ class LLMClient:
 
     def invoke(self, prompt: str):
         return self.model.invoke(prompt)
+
+    def invoke_structured(
+        self,
+        prompt: str,
+        schema: type[T],
+    ) -> T:
+        structured_model = self.model.with_structured_output(schema)
+        return structured_model.invoke(prompt)

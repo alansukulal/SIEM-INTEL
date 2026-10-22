@@ -3,19 +3,13 @@ from app.tools.sentinel import SentinelClient
 
 
 def investigator_node(state: InvestigationState) -> dict:
-    plan = state["plan"]
+    kql = state["query"]
 
     sentinel = SentinelClient()
 
-    kql = """
-    Heartbeat
-    | take 10
-    """
-
     results = sentinel.run_query(kql)
 
-
     return {
-        "query":kql.strip(),
         "evidence": results,
+        "investigation_attempts": state["investigation_attempts"] + 1,
     }

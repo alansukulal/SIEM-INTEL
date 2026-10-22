@@ -1,5 +1,8 @@
+
 from fastapi import FastAPI
+
 from app.api.routes import router
+
 
 app = FastAPI(
     title="SIEM-INTEL",
@@ -7,12 +10,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
+app.include_router(router)
+
 
 @app.get("/")
 def root():
-    return {
-        "message": "SIEM-INTEL is running"
-    }
-
-
-app.include_router(router)
+    return {"message": "SIEM-INTEL is running"}
