@@ -9,6 +9,10 @@ def kql_generator_node(state: InvestigationState) -> dict:
     siem = state["siem"]
     errors = state.get("kql_validation_errors", [])
     knowledge = state.get("knowledge", [])
+    previous_query = state.get("query", "")
+    next_reason = state.get("next_investigation_reason", "")
+    evidence = state.get("evidence", [])
+    investigation_attempts = state.get("investigation_attempts", 0)
 
     prompt = f"""
 You are an expert Microsoft Sentinel KQL query generator.
@@ -24,6 +28,15 @@ Alert:
 Retrieved knowledge:
 {knowledge}
 
+Previous query:
+{previous_query}
+
+Previous evidence:
+{evidence}
+
+Reason for further investigation:
+{next_reason}
+
 Previous validation errors:
 {errors}
 
@@ -34,11 +47,14 @@ Requirements:
 4. Generate one query statement, not multiple statements.
 5. Do not use write, schema-changing, or data-management commands.
 6. Do not use union, join, evaluate, invoke, or externaldata.
-7. If validation errors are provided, correct the query to address them.
-8. If the retrieved knowledge is insufficient, do not invent a schema.
-   Explain the limitation in the reason field and return an empty KQL
-   query rather than guessing.
-9. Do not include Markdown code fences.
+7. Correct previous validation errors when provided.
+8. If more investigation was requested, address the specific unanswered
+   question in the reason above.
+9. When previous evidence exists, use it to guide the next query.
+10. Do not blindly repeat the previous query.
+11. If the retrieved knowledge is insufficient, return an empty KQL
+    query and explain the limitation in the reason field.
+12. Do not include Markdown code fences.
 
 Return:
 - kql: the KQL query
@@ -47,14 +63,30 @@ Return:
 """
 
     llm = LLMClient()
+    result = llm.invoke_structured(prompt, KQLGenerationResult)
 
-    result = llm.invoke_structured(
-        prompt,
-        KQLGenerationResult,
-    )
+    new_query = result.kql.strip()
+
+    # Avoid blindly executing the same query during a follow-up
+    # investigation. Do not block validation-error correction retries.
+    if (
+        investigation_attempts > 0
+        and next_reason
+        and new_query
+        and new_query == previous_query.strip()
+        and not errors
+    ):
+        return {
+            "query": "",
+            "kql_reason": (
+                "The generated query repeated the previous query. "
+                "A meaningfully different query is required."
+            ),
+            "kql_attempts": state.get("kql_attempts", 0) + 1,
+        }
 
     return {
-        "query": result.kql.strip(),
+        "query": new_query,
         "kql_reason": result.reason,
         "kql_attempts": state.get("kql_attempts", 0) + 1,
     }

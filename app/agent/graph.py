@@ -22,17 +22,27 @@ def route_after_kql_validation(
     return "end"
 
 
+
 def route_after_evaluation(
     state: InvestigationState,
 ) -> str:
-    if (
-        state["needs_more_investigation"]
-        and state["investigation_attempts"] < 3
-        and state["kql_attempts"] < 3
-    ):
-        return "retry"
+    # Never retry if Sentinel execution failed.
+    if state.get("investigation_status") == "failed":
+        return "end"
 
-    return "end"
+    # Stop if the evaluator says the evidence is sufficient.
+    if not state["needs_more_investigation"]:
+        return "end"
+
+    # Enforce both retry limits.
+    if (
+        state["investigation_attempts"] >= 3
+        or state["kql_attempts"] >= 3
+    ):
+        return "end"
+
+    return "retry"
+
 
 
 def build_investigation_graph():

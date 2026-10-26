@@ -16,3 +16,6 @@ class InvestigationState(TypedDict):
     kql_attempts:int
     kql_reason:str
     knowledge: list[dict]
+    investigation_status:str
+    investigation_error:str
+    next_investigation_reason: str

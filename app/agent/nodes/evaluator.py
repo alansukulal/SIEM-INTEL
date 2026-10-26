@@ -1,44 +1,68 @@
+
 from app.agent.state import InvestigationState
 from app.llm.client import LLMClient
+from app.models.evaluation import EvaluationResult
 
 
 def evaluator_node(state: InvestigationState) -> dict:
-    alert = state["alert"]
-    query = state["query"]
+    # A failed query is not the same as an empty result.
+    if state.get("investigation_status") == "failed":
+        return {
+            "finding": (
+                "Sentinel query execution failed. "
+                "The alert cannot be evaluated from this investigation."
+            ),
+            "needs_more_investigation": False,
+            "next_investigation_reason": "",
+        }
+
     evidence = state["evidence"]
+
+    # A successful query returning no rows is a valid outcome.
+    if not evidence:
+        return {
+            "finding": (
+                "The query completed but returned no matching events. "
+                "This alone does not prove the alert is false."
+            ),
+            "needs_more_investigation": False,
+            "next_investigation_reason": "",
+        }
 
     prompt = f"""
 You are a SOC investigation evaluator.
 
-Analyze the investigation evidence below and provide a concise finding.
-
 Alert:
-{alert}
+{state["alert"]}
 
 Executed KQL:
-{query}
+{state["query"]}
 
 Evidence:
 {evidence}
 
+Evaluate the evidence and decide whether more investigation is needed.
+
 Explain:
 1. What the evidence shows.
-2. Whether the evidence supports or contradicts the alert.
-3. Whether more investigation is required.
+2. Whether it supports or contradicts the alert.
+3. What important question remains unanswered, if any.
 
-Do not invent facts that are not present in the evidence.
+Rules:
+- Do not invent facts.
+- Request further investigation only when additional evidence could
+  help answer an important unanswered question.
+- If more investigation is needed, specify what to investigate next.
 """
 
     llm = LLMClient()
-
-    response = llm.invoke(prompt)
-    if evidence:
-        needs_more_investigation=False
-
-    else:
-        needs_more_investigation=True
+    result: EvaluationResult = llm.invoke_structured(
+        prompt,
+        EvaluationResult,
+    )
 
     return {
-        "finding": response.content,
-        "needs_more_investigation":needs_more_investigation,
+        "finding": result.finding,
+        "needs_more_investigation": result.needs_more_investigation,
+        "next_investigation_reason": result.next_investigation_reason,
     }
