@@ -12,7 +12,7 @@ T = TypeVar("T", bound=BaseModel)
 class LLMClient:
     def __init__(self) -> None:
         self.model = ChatOpenAI(
-            model="gpt-5.6",
+            model="gpt-5.6-luna",
             temperature=0,
             api_key=settings.openai_api_key,
         )

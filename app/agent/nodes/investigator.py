@@ -1,3 +1,4 @@
+
 import logging
 
 from app.agent.state import InvestigationState
@@ -7,12 +8,22 @@ logger = logging.getLogger(__name__)
 
 
 def investigator_node(state: InvestigationState) -> dict:
+    history = list(state.get("investigation_history", []))
+    query = state["query"]
+
     try:
         sentinel = SentinelClient()
-        results = sentinel.run_query(state["query"])
+        results = sentinel.run_query(query)
+
+        history.append({
+            "query": query,
+            "evidence": results,
+            "status": "success",
+        })
 
         return {
             "evidence": results,
+            "investigation_history": history,
             "investigation_attempts": (
                 state.get("investigation_attempts", 0) + 1
             ),
@@ -23,8 +34,15 @@ def investigator_node(state: InvestigationState) -> dict:
     except SentinelQueryError:
         logger.exception("Sentinel query execution failed")
 
+        history.append({
+            "query": query,
+            "evidence": [],
+            "status": "failed",
+        })
+
         return {
             "evidence": [],
+            "investigation_history": history,
             "investigation_attempts": (
                 state.get("investigation_attempts", 0) + 1
             ),

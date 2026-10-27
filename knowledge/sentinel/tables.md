@@ -6,12 +6,20 @@ SigninLogs contains Microsoft Entra ID sign-in and authentication events.
 
 Important columns:
 
+- TenantId
+- SourceSystem
 - TimeGenerated
-- UserPrincipalName
+- ResourceId
+- OperationName
+- OperationVersion
+- Category
 - ResultType
-- IPAddress
-- Location
-- AppDisplayName
+- ResultSignature
+- ResultDescription
+- DurationMs
+- CorrelationId
+- Resource
+- ResourceGroup
 
 Use SigninLogs when investigating user authentication activity, failed sign-ins, successful sign-ins, suspicious IP addresses, applications, or authentication failures.
 

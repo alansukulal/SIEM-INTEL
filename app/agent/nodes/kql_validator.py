@@ -33,17 +33,30 @@ def kql_validator_node(state: InvestigationState) -> dict:
     kql = state["query"].strip()
     errors: list[str] = []
 
+    def normalize_query(query: str) -> str:
+        return " ".join(query.lower().split())
+
+    executed_queries = {
+        normalize_query(item["query"])
+        for item in state.get("investigation_history", [])
+        if item.get("query")
+    }
+
+    if kql and normalize_query(kql) in executed_queries:
+        errors.append(
+            "This query has already been executed during this investigation. "
+            "Generate a meaningfully different query."
+        )
+
     if not kql:
         errors.append("KQL query is empty.")
     else:
         if "```" in kql:
             errors.append("Remove Markdown code fences from KQL.")
 
-        # This initial policy permits one query statement only.
         if ";" in kql:
             errors.append("Multiple statements are not allowed.")
 
-        # Require a table from the retrieved knowledge.
         allowed_tables = {
             item.get("metadata", {}).get("table")
             for item in state.get("knowledge", [])
@@ -87,7 +100,15 @@ def kql_validator_node(state: InvestigationState) -> dict:
                     f"Disallowed KQL keyword detected: {keyword}"
                 )
 
+    correction_attempts = state.get("kql_correction_attempts", 0)
+
+    if errors:
+        correction_attempts += 1
+    else:
+        correction_attempts = 0
+
     return {
         "kql_valid": not errors,
         "kql_validation_errors": errors,
+        "kql_correction_attempts": correction_attempts,
     }

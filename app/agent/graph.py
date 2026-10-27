@@ -6,43 +6,52 @@ from app.agent.nodes.investigator import investigator_node
 from app.agent.nodes.knowledge_retriever import knowledge_retriever_node
 from app.agent.nodes.kql_generator import kql_generator_node
 from app.agent.nodes.kql_validator import kql_validator_node
+from app.agent.nodes.outcomes import (
+    mark_completed_node,
+    mark_failed_node,
+    mark_incomplete_node,
+    mark_kql_exhausted_node,
+)
 from app.agent.nodes.planner import planner_node
 from app.agent.state import InvestigationState
 
 
-def route_after_kql_validation(
-    state: InvestigationState,
-) -> str:
+MAX_KQL_CORRECTION_ATTEMPTS = 1
+
+
+
+def route_after_kql_validation(state: InvestigationState) -> str:
+    # Stop immediately if the generator could not produce a query.
+    if not state.get("query", "").strip():
+        return "kql_exhausted"
+
     if state["kql_valid"]:
         return "investigator"
 
-    if state["kql_attempts"] < 3:
+    if (
+        state.get("kql_correction_attempts", 0)
+        < MAX_KQL_CORRECTION_ATTEMPTS
+    ):
         return "retry"
 
-    return "end"
+    return "kql_exhausted"
 
 
 
-def route_after_evaluation(
-    state: InvestigationState,
-) -> str:
-    # Never retry if Sentinel execution failed.
+def route_after_evaluation(state: InvestigationState) -> str:
     if state.get("investigation_status") == "failed":
-        return "end"
+        return "failed"
 
-    # Stop if the evaluator says the evidence is sufficient.
-    if not state["needs_more_investigation"]:
-        return "end"
+    if not state.get("needs_more_investigation", False):
+        return "completed"
 
-    # Enforce both retry limits.
-    if (
-        state["investigation_attempts"] >= 3
-        or state["kql_attempts"] >= 3
-    ):
-        return "end"
+    max_steps = state.get("max_investigation_steps", 10)
+    attempts = state.get("investigation_attempts", 0)
+
+    if attempts >= max_steps:
+        return "incomplete"
 
     return "retry"
-
 
 
 def build_investigation_graph():
@@ -55,6 +64,11 @@ def build_investigation_graph():
     graph.add_node("investigator", investigator_node)
     graph.add_node("evaluator", evaluator_node)
 
+    graph.add_node("mark_completed", mark_completed_node)
+    graph.add_node("mark_incomplete", mark_incomplete_node)
+    graph.add_node("mark_failed", mark_failed_node)
+    graph.add_node("mark_kql_exhausted", mark_kql_exhausted_node)
+
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "knowledge_retriever")
     graph.add_edge("knowledge_retriever", "kql_generator")
@@ -66,7 +80,7 @@ def build_investigation_graph():
         {
             "investigator": "investigator",
             "retry": "kql_generator",
-            "end": END,
+            "kql_exhausted": "mark_kql_exhausted",
         },
     )
 
@@ -76,9 +90,16 @@ def build_investigation_graph():
         "evaluator",
         route_after_evaluation,
         {
+            "completed": "mark_completed",
+            "incomplete": "mark_incomplete",
+            "failed": "mark_failed",
             "retry": "kql_generator",
-            "end": END,
         },
     )
+
+    graph.add_edge("mark_completed", END)
+    graph.add_edge("mark_incomplete", END)
+    graph.add_edge("mark_failed", END)
+    graph.add_edge("mark_kql_exhausted", END)
 
     return graph.compile()

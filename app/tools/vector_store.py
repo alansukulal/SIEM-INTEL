@@ -8,13 +8,10 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 
 
-# Resolve paths from the project root, not the terminal's current directory.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHROMA_PATH = PROJECT_ROOT / "data" / "chroma"
 
-chroma_client = chromadb.PersistentClient(
-    path=str(CHROMA_PATH)
-)
+chroma_client = chromadb.PersistentClient(path=str(CHROMA_PATH))
 
 collection = chroma_client.get_or_create_collection(
     name="siem_knowledge_cosine_chunks",
@@ -28,61 +25,87 @@ def get_embedding_model() -> SentenceTransformer:
     return SentenceTransformer("all-MiniLM-L6-v2")
 
 
-def chunk_markdown(text: str) -> list[dict[str, str]]:
-    """Split the Markdown document into sections headed by ##."""
+def chunk_markdown(text: str, source_type: str) -> list[dict[str, str]]:
+    """Split Markdown into retrievable sections."""
     sections = re.split(r"(?m)^##\s+", text)
     chunks = []
 
     for section in sections:
         section = section.strip()
 
-        if not section or section.startswith("# Microsoft Sentinel Tables"):
+        if not section:
             continue
 
         lines = section.splitlines()
-        table_name = lines[0].strip()
+        title = lines[0].strip()
+
+        # Skip a top-level document title if present.
+        if title.startswith("# "):
+            continue
+
         document = f"## {section}"
 
-        chunks.append({
-            "table": table_name,
-            "document": document,
-            "content_hash": hashlib.sha256(
-                document.encode("utf-8")
-            ).hexdigest(),
-        })
+        if source_type == "table_schema":
+            # Existing schema documents use the section heading as table name.
+            if title.startswith("Microsoft Sentinel Tables"):
+                continue
+
+            chunks.append({
+                "title": title,
+                "document": document,
+                "type": "table_schema",
+                "content_hash": hashlib.sha256(
+                    document.encode("utf-8")
+                ).hexdigest(),
+            })
+        else:
+            chunks.append({
+                "title": title,
+                "document": document,
+                "type": "runbook",
+                "content_hash": hashlib.sha256(
+                    document.encode("utf-8")
+                ).hexdigest(),
+            })
 
     return chunks
 
 
 def ingest_knowledge(file_path: Path) -> dict[str, int]:
-    """Embed new or changed sections and remove stale sections."""
+    """Embed changed sections and remove stale sections for one source."""
+    file_path = file_path.resolve()
     source = file_path.relative_to(PROJECT_ROOT).as_posix()
+
+    source_type = (
+        "table_schema"
+        if file_path.name == "tables.md"
+        else "runbook"
+    )
+
     text = file_path.read_text(encoding="utf-8")
-    chunks = chunk_markdown(text)
+    chunks = chunk_markdown(text, source_type)
 
     existing = collection.get(
         where={"source": source},
         include=["metadatas"],
     )
 
-    existing_metadata = dict(
-        zip(existing["ids"], existing["metadatas"])
-    )
+    existing_metadata = dict(zip(existing["ids"], existing["metadatas"]))
 
     current_ids = set()
     embedded_count = 0
 
     for chunk in chunks:
-        record_id = f"{source}:{chunk['table']}"
+        record_id = f"{source}:{chunk['title']}"
         current_ids.add(record_id)
 
         previous_metadata = existing_metadata.get(record_id, {})
 
-        # Skip embedding if the document has not changed.
         if (
             previous_metadata
             and previous_metadata.get("content_hash")
             == chunk["content_hash"]
+            and previous_metadata.get("type") == chunk["type"]
         ):
             continue
 
@@ -90,21 +113,25 @@ def ingest_knowledge(file_path: Path) -> dict[str, int]:
             chunk["document"]
         ).tolist()
 
+        metadata = {
+            "source": source,
+            "type": chunk["type"],
+            "title": chunk["title"],
+            "content_hash": chunk["content_hash"],
+        }
+
+        if chunk["type"] == "table_schema":
+            metadata["table"] = chunk["title"]
+
         collection.upsert(
             ids=[record_id],
             documents=[chunk["document"]],
             embeddings=[embedding],
-            metadatas=[{
-                "source": source,
-                "type": "table_schema",
-                "table": chunk["table"],
-                "content_hash": chunk["content_hash"],
-            }],
+            metadatas=[metadata],
         )
 
         embedded_count += 1
 
-    # Remove records for sections deleted from the source document.
     stale_ids = set(existing["ids"]) - current_ids
 
     if stale_ids:
@@ -120,22 +147,23 @@ def ingest_knowledge(file_path: Path) -> dict[str, int]:
 def search_knowledge(
     query: str,
     n_results: int = 3,
+    source_type: str | None = None,
 ) -> list[dict]:
-    """Embed a search query and retrieve matching knowledge."""
-    if not query.strip():
+    """Retrieve relevant knowledge, optionally filtered by document type."""
+    if not query.strip() or collection.count() == 0:
         return []
 
-    if collection.count() == 0:
-        return []
+    query_embedding = get_embedding_model().encode(query).tolist()
 
-    query_embedding = get_embedding_model().encode(
-        query
-    ).tolist()
+    query_args = {
+        "query_embeddings": [query_embedding],
+        "n_results": min(n_results, collection.count()),
+    }
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(n_results, collection.count()),
-    )
+    if source_type:
+        query_args["where"] = {"type": source_type}
+
+    results = collection.query(**query_args)
 
     return [
         {
