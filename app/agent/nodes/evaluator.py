@@ -1,16 +1,18 @@
 
+import json
+
 from app.agent.state import InvestigationState
 from app.llm.client import LLMClient
 from app.models.evaluation import EvaluationResult
 
 
 def evaluator_node(state: InvestigationState) -> dict:
-    # A failed query is not the same as an empty result.
+    # A failed query must not be treated as evidence of an outage.
     if state.get("investigation_status") == "failed":
         return {
             "finding": (
                 "Sentinel query execution failed. "
-                "The alert cannot be evaluated from this investigation."
+                "The alert could not be evaluated from this query."
             ),
             "needs_more_investigation": False,
             "next_investigation_reason": "",
@@ -21,76 +23,103 @@ def evaluator_node(state: InvestigationState) -> dict:
     attempts = state.get("investigation_attempts", 0)
     max_steps = state.get("max_investigation_steps", 10)
 
-    # Do not request more work when the investigation budget is exhausted.
-    if attempts >= max_steps:
-        return {
-            "finding": (
-                "The investigation reached its maximum step limit. "
-                "Findings are based on the evidence collected so far."
-            ),
-            "needs_more_investigation": False,
-            "next_investigation_reason": "",
-        }
-    
-    latest_evidence = evidence[:5] if isinstance(evidence, list) else evidence
-    evidence_context = str(latest_evidence)[:3000]
+    # The plan is JSON text produced by the planner.
+    raw_plan = state.get("plan", "")
+    try:
+        plan = json.loads(raw_plan) if raw_plan else {}
+    except (json.JSONDecodeError, TypeError):
+        plan = {"objective": raw_plan}
 
-    history_context = "\n\n".join(
-        (
-            f"Query: {item.get('query', '')}\n"
-            f"Status: {item.get('status', 'unknown')}\n"
-            f"Evidence row count: {len(item.get('evidence', []))}"
+    plan_context = json.dumps(plan, default=str)[:2500]
+
+    # Bound evidence and history to control prompt size.
+    if isinstance(evidence, list):
+        evidence_context = json.dumps(
+            evidence[-5:], default=str
+        )[:3000]
+    else:
+        evidence_context = str(evidence)[:3000]
+
+    history_items = []
+    for item in history[-4:]:
+        previous_evidence = item.get("evidence", [])
+        history_items.append(
+            {
+                "query": item.get("query", ""),
+                "status": item.get("status", "unknown"),
+                "evidence_row_count": (
+                    len(previous_evidence)
+                    if isinstance(previous_evidence, list)
+                    else None
+                ),
+            }
         )
-        for item in history[-4:]
-    ) or "No previous investigation queries."
 
+    history_context = json.dumps(
+        history_items, default=str
+    )[:2500]
 
     prompt = f"""
-You are a SOC investigation evaluator for Microsoft Sentinel.
+You are a SOC investigation evaluator for {state.get("siem", "")}.
 
-Alert:
+Original alert or question:
 {state.get("alert", "")}
+
+Investigation plan:
+{plan_context}
 
 Latest executed KQL:
 {state.get("query", "")}
 
-Evidence from the latest query:
+Latest query execution status:
+{state.get("investigation_status", "unknown")}
+
+Evidence collected:
 {evidence_context}
 
-Complete investigation history, including previous queries and results:
+Investigation history:
 {history_context}
 
-Current investigation step: {attempts}
+Investigation steps completed: {attempts}
 Maximum investigation steps: {max_steps}
 
-Evaluate the evidence and decide whether more investigation is needed.
-
-Explain:
-1. What the collected evidence actually shows.
-2. Whether it supports, contradicts, or is insufficient to assess the alert.
-3. What important question remains unanswered, if any.
-4. If another query is necessary, describe a specific next investigation.
+Your task is to determine whether the investigation objective has
+been answered by the available evidence.
 
 Rules:
-- Do not invent facts or claim that missing evidence proves an alert is false.
-- Consider the latest evidence together with all previous investigation results.
-- Check the history before requesting further investigation.
-- Do not request a query that merely repeats a previous query or investigation.
-- Request further investigation only if it could answer an important,
-  unanswered question.
-- If the evidence is sufficient, return needs_more_investigation=False.
-- If further investigation is needed, make next_investigation_reason
-  specific enough to guide a meaningfully different KQL query.
-- If the evidence is inconclusive and no useful next query is apparent,
-  explain the limitation and stop.
+1. Evaluate the original objective and its success criteria, not
+   unrelated questions.
+2. Distinguish between logs being present, logs being absent in the
+   searched time range, and evidence being insufficient.
+3. Do not claim that an entire table is empty merely because a query
+   returned no rows for a limited time range or filter.
+4. Do not claim an outage or healthy ingestion without supporting evidence.
+5. Consider all available evidence and previous query history.
+6. If the objective is answered, set needs_more_investigation=False.
+7. If an important question remains unanswered, request another query
+   only when a useful, non-duplicative query could resolve that gap.
+8. If the evidence is inconclusive and no useful query is apparent,
+   explain the limitation and stop.
+9. If the step budget is exhausted and the objective remains
+   unanswered, set needs_more_investigation=True and explain what
+   remains unresolved. The graph will mark the investigation incomplete.
+10. Keep findings concise, factual, and evidence-based.
+11. Do not confuse reaching the step limit with answering the objective.
+
+Return:
+- finding: What the evidence establishes and any limitations.
+- needs_more_investigation: Whether important questions remain.
+- next_investigation_reason: The specific unresolved question, or
+  an empty string if no further investigation is needed.
 """
 
-    llm = LLMClient()
-    result: EvaluationResult = llm.invoke_structured(
+    result: EvaluationResult = LLMClient().invoke_structured(
         prompt,
         EvaluationResult,
     )
 
+    # Preserve the model's decision. Graph routing determines whether
+    # an unresolved investigation can continue within its step budget.
     return {
         "finding": result.finding,
         "needs_more_investigation": result.needs_more_investigation,

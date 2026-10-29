@@ -25,14 +25,23 @@ def mark_kql_exhausted_node(state: InvestigationState) -> dict:
     reason = state.get("kql_reason", "").strip()
 
     if not reason:
-        reason = (
-            "The agent could not generate a safe, usable KQL query."
+        reason = "The agent could not generate a safe, usable KQL query."
+
+    previous_finding = state.get("finding", "").strip()
+
+    if previous_finding:
+        finding = (
+            f"{previous_finding}\n\n"
+            "Investigation stopped before the next query executed. "
+            f"Reason: {reason}"
+        )
+    else:
+        finding = (
+            "Investigation stopped before the next query could execute. "
+            f"Reason: {reason}"
         )
 
     return {
         "investigation_outcome": "kql_exhausted",
-        "finding": (
-            "Investigation stopped before the next query could execute. "
-            f"Reason: {reason}"
-        ),
+        "finding": finding,
     }

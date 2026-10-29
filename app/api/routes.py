@@ -43,7 +43,7 @@ def create_investigation(request: InvestigationRequest):
         "kql_correction_attempts": 0,
         "knowledge": [],
         "tenant_id": "local-dev",
-        "max_investigation_steps": 3,
+        "max_investigation_steps": 5,
         "investigation_outcome": "pending",
         "investigation_history": [],
     }

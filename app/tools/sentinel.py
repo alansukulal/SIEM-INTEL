@@ -1,6 +1,7 @@
 
 from datetime import timedelta
 import logging
+import re
 
 from azure.core.exceptions import AzureError
 from azure.identity import ClientSecretCredential
@@ -37,6 +38,7 @@ class SentinelClient:
         timespan: timedelta = timedelta(hours=1),
         server_timeout: int = 30,
     ) -> list[dict]:
+        """Execute a KQL query against the configured Log Analytics workspace."""
         if not kql or not kql.strip():
             raise ValueError("KQL query cannot be empty.")
 
@@ -53,19 +55,20 @@ class SentinelClient:
                 server_timeout=server_timeout,
             )
         except AzureError as exc:
+            # Avoid logging credentials or the full query.
             logger.warning(
-                "Sentinel query request failed: %s",
+                "Sentinel query request failed. Error type: %s",
                 type(exc).__name__,
             )
             raise SentinelQueryError(
-                "Sentinel query request failed. Check Azure access, "
-                "query syntax, and service availability."
+                "Sentinel query request failed. Check Azure permissions, "
+                "KQL syntax, and service availability."
             ) from exc
 
         if response.status == LogsQueryStatus.PARTIAL:
             logger.warning("Sentinel returned partial query results.")
             raise SentinelQueryError(
-                "Sentinel returned partial results; the investigation "
+                "Sentinel returned partial results. The investigation "
                 "cannot treat them as complete evidence."
             )
 
@@ -91,3 +94,49 @@ class SentinelClient:
             )
 
         return rows
+
+    def get_table_schema(
+        self,
+        table_name: str,
+    ) -> list[dict[str, str]]:
+        """
+        Discover a table's columns and data types in the configured workspace.
+
+        Only a simple KQL table identifier is accepted. Arbitrary query text
+        is never accepted as a table name.
+        """
+        if not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*",
+            table_name,
+        ):
+            raise ValueError("Invalid Sentinel table identifier.")
+
+        schema_query = f"{table_name} | getschema"
+
+        rows = self.run_query(
+            schema_query,
+            timespan=timedelta(days=1),
+            server_timeout=30,
+        )
+
+        schema = [
+            {
+                "name": str(row["ColumnName"]),
+                "type": str(row["DataType"]),
+            }
+            for row in rows
+            if row.get("ColumnName") and row.get("DataType")
+        ]
+
+        if not schema:
+            raise SentinelQueryError(
+                f"No schema metadata was returned for '{table_name}'."
+            )
+
+        logger.info(
+            "Discovered schema for table %s: %d columns",
+            table_name,
+            len(schema),
+        )
+
+        return schema

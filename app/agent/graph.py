@@ -17,7 +17,7 @@ from app.agent.state import InvestigationState
 
 
 MAX_KQL_CORRECTION_ATTEMPTS = 1
-
+DEFAULT_MAX_INVESTIGATION_STEPS = 5
 
 
 def route_after_kql_validation(state: InvestigationState) -> str:
@@ -25,7 +25,7 @@ def route_after_kql_validation(state: InvestigationState) -> str:
     if not state.get("query", "").strip():
         return "kql_exhausted"
 
-    if state["kql_valid"]:
+    if state.get("kql_valid", False):
         return "investigator"
 
     if (
@@ -37,15 +37,18 @@ def route_after_kql_validation(state: InvestigationState) -> str:
     return "kql_exhausted"
 
 
-
 def route_after_evaluation(state: InvestigationState) -> str:
     if state.get("investigation_status") == "failed":
         return "failed"
 
+    # The evaluator has enough evidence to reach a conclusion.
     if not state.get("needs_more_investigation", False):
         return "completed"
 
-    max_steps = state.get("max_investigation_steps", 10)
+    max_steps = state.get(
+        "max_investigation_steps",
+        DEFAULT_MAX_INVESTIGATION_STEPS,
+    )
     attempts = state.get("investigation_attempts", 0)
 
     if attempts >= max_steps:
@@ -69,9 +72,10 @@ def build_investigation_graph():
     graph.add_node("mark_failed", mark_failed_node)
     graph.add_node("mark_kql_exhausted", mark_kql_exhausted_node)
 
-    graph.add_edge(START, "planner")
-    graph.add_edge("planner", "knowledge_retriever")
-    graph.add_edge("knowledge_retriever", "kql_generator")
+    graph.add_edge(START, "knowledge_retriever")
+    graph.add_edge("knowledge_retriever", "planner")
+    graph.add_edge("planner", "kql_generator")
+
     graph.add_edge("kql_generator", "kql_validator")
 
     graph.add_conditional_edges(

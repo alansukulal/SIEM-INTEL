@@ -18,6 +18,12 @@ collection = chroma_client.get_or_create_collection(
     metadata={"hnsw:space": "cosine"},
 )
 
+@lru_cache(maxsize=128)
+def _embed_query(query: str) -> tuple[float, ...]:
+    embedding = get_embedding_model().encode(
+        query.strip()
+    )
+    return tuple(float(value) for value in embedding)
 
 @lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
@@ -153,8 +159,7 @@ def search_knowledge(
     if not query.strip() or collection.count() == 0:
         return []
 
-    query_embedding = get_embedding_model().encode(query).tolist()
-
+    query_embedding = list(_embed_query(query))
     query_args = {
         "query_embeddings": [query_embedding],
         "n_results": min(n_results, collection.count()),
