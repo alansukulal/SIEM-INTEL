@@ -1,3 +1,4 @@
+
 from typing import TypeVar
 
 from langchain_openai import ChatOpenAI
@@ -15,6 +16,9 @@ class LLMClient:
             model="gpt-5.6-luna",
             temperature=0,
             api_key=settings.openai_api_key,
+            model_kwargs={
+                "reasoning_effort": "none"
+            },
         )
 
     def invoke(self, prompt: str):
@@ -25,5 +29,8 @@ class LLMClient:
         prompt: str,
         schema: type[T],
     ) -> T:
-        structured_model = self.model.with_structured_output(schema)
+        structured_model = self.model.with_structured_output(
+            schema,
+            method="function_calling",
+        )
         return structured_model.invoke(prompt)

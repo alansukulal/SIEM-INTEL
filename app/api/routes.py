@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.agent.graph import build_investigation_graph
+from app.agent.initial_state import create_initial_state
 
 router = APIRouter(prefix="/api/v1")
 
@@ -24,29 +25,10 @@ def health():
 
 @router.post("/investigations")
 def create_investigation(request: InvestigationRequest):
-    initial_state = {
-        "alert": request.alert.strip(),
-        "siem": request.siem.strip(),
-        "plan": "",
-        "query": "",
-        "evidence": [],
-        "finding": "",
-        "needs_more_investigation": False,
-        "next_investigation_reason": "",
-        "investigation_attempts": 0,
-        "investigation_status": "pending",
-        "investigation_error": "",
-        "kql_valid": False,
-        "kql_validation_errors": [],
-        "kql_attempts": 0,
-        "kql_reason": "",
-        "kql_correction_attempts": 0,
-        "knowledge": [],
-        "tenant_id": "local-dev",
-        "max_investigation_steps": 5,
-        "investigation_outcome": "pending",
-        "investigation_history": [],
-    }
+    initial_state = create_initial_state(
+    alert=request.alert,
+    siem=request.siem,
+    )
 
     result = graph.invoke(initial_state)
 

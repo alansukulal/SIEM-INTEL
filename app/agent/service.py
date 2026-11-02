@@ -1,6 +1,8 @@
+
 from pydantic import BaseModel
 
 from app.agent.graph import build_investigation_graph
+from app.agent.initial_state import create_initial_state
 
 
 class InvestigationInput(BaseModel):
@@ -11,13 +13,10 @@ class InvestigationInput(BaseModel):
 def run_investigation(request: InvestigationInput) -> dict:
     graph = build_investigation_graph()
 
-    initial_state = {
-        "alert": request.alert,
-        "siem": request.siem,
-        "plan": "",
-        "evidence": [],
-        "finding": "",
-    }
+    initial_state = create_initial_state(
+        alert=request.alert,
+        siem=request.siem,
+    )
 
     result = graph.invoke(initial_state)
 

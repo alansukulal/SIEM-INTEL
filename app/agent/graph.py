@@ -13,6 +13,8 @@ from app.agent.nodes.outcomes import (
     mark_kql_exhausted_node,
 )
 from app.agent.nodes.planner import planner_node
+from app.agent.nodes.tool_executor import tool_executor_node
+from app.agent.nodes.tool_selector import tool_selector_node
 from app.agent.state import InvestigationState
 
 
@@ -20,8 +22,31 @@ MAX_KQL_CORRECTION_ATTEMPTS = 1
 DEFAULT_MAX_INVESTIGATION_STEPS = 5
 
 
+def route_after_tool_selection(state: InvestigationState) -> str:
+    """Decide whether to execute tools or finish the investigation."""
+
+    if state.get("execution_complete", False):
+        return "completed"
+
+    if state.get("tool_calls"):
+        return "execute_tools"
+
+    # No valid tool calls and no completion decision.
+    return "incomplete"
+
+
+def route_after_tool_execution(state: InvestigationState) -> str:
+    """Route pending graph capabilities to their workflows."""
+
+    pending_capabilities = state.get("pending_capabilities", [])
+
+    if "sentinel_investigation" in pending_capabilities:
+        return "sentinel_investigation"
+
+    return "select_again"
+
+
 def route_after_kql_validation(state: InvestigationState) -> str:
-    # Stop immediately if the generator could not produce a query.
     if not state.get("query", "").strip():
         return "kql_exhausted"
 
@@ -41,7 +66,6 @@ def route_after_evaluation(state: InvestigationState) -> str:
     if state.get("investigation_status") == "failed":
         return "failed"
 
-    # The evaluator has enough evidence to reach a conclusion.
     if not state.get("needs_more_investigation", False):
         return "completed"
 
@@ -54,28 +78,57 @@ def route_after_evaluation(state: InvestigationState) -> str:
     if attempts >= max_steps:
         return "incomplete"
 
-    return "retry"
+    return "select_again"
 
 
 def build_investigation_graph():
     graph = StateGraph(InvestigationState)
 
-    graph.add_node("planner", planner_node)
+    # Existing investigation nodes
     graph.add_node("knowledge_retriever", knowledge_retriever_node)
+    graph.add_node("planner", planner_node)
     graph.add_node("kql_generator", kql_generator_node)
     graph.add_node("kql_validator", kql_validator_node)
     graph.add_node("investigator", investigator_node)
     graph.add_node("evaluator", evaluator_node)
 
+    # Dynamic tool nodes
+    graph.add_node("tool_selector", tool_selector_node)
+    graph.add_node("tool_executor", tool_executor_node)
+
+    # Outcome nodes
     graph.add_node("mark_completed", mark_completed_node)
     graph.add_node("mark_incomplete", mark_incomplete_node)
     graph.add_node("mark_failed", mark_failed_node)
     graph.add_node("mark_kql_exhausted", mark_kql_exhausted_node)
 
+    # Initial workflow
     graph.add_edge(START, "knowledge_retriever")
     graph.add_edge("knowledge_retriever", "planner")
-    graph.add_edge("planner", "kql_generator")
+    graph.add_edge("planner", "tool_selector")
 
+    # Dynamic tool selection
+    graph.add_conditional_edges(
+        "tool_selector",
+        route_after_tool_selection,
+        {
+            "execute_tools": "tool_executor",
+            "completed": "mark_completed",
+            "incomplete": "mark_incomplete",
+        },
+    )
+
+    # Tool execution and capability routing
+    graph.add_conditional_edges(
+        "tool_executor",
+        route_after_tool_execution,
+        {
+            "sentinel_investigation": "kql_generator",
+            "select_again": "tool_selector",
+        },
+    )
+
+    # Existing KQL generation and validation pipeline
     graph.add_edge("kql_generator", "kql_validator")
 
     graph.add_conditional_edges(
@@ -88,19 +141,21 @@ def build_investigation_graph():
         },
     )
 
+    # Investigation and evaluation
     graph.add_edge("investigator", "evaluator")
 
     graph.add_conditional_edges(
         "evaluator",
         route_after_evaluation,
         {
+            "select_again": "tool_selector",
             "completed": "mark_completed",
             "incomplete": "mark_incomplete",
             "failed": "mark_failed",
-            "retry": "kql_generator",
         },
     )
 
+    # Terminal outcomes
     graph.add_edge("mark_completed", END)
     graph.add_edge("mark_incomplete", END)
     graph.add_edge("mark_failed", END)
