@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     azure_client_secret: str
     azure_workspace_id: str
     openai_api_key: str
+    tavily_api_key: str | None = None
 
 
     model_config = SettingsConfigDict(
