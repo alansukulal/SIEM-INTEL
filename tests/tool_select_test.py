@@ -1,60 +1,33 @@
+from unittest.mock import MagicMock, patch
 
-from app.models.tool_selection import (
-    ToolCall,
-    ToolSelectionResult,
-)
-
-
-def test_knowledge_selection():
-    result = ToolSelectionResult(
-        reasoning="Need relevant runbook information.",
-        tool_calls=[
-            ToolCall(
-                tool_name="knowledge_search",
-                arguments={
-                    "query": "Sentinel log outage",
-                    "source_type": "runbook",
-                    "limit": 3,
-                },
-                reason="Retrieve outage investigation guidance.",
-            )
-        ],
-    )
-
-    assert result.tool_calls[0].tool_name == "knowledge_search"
-
-
-def test_sentinel_selection():
-    result = ToolSelectionResult(
-        reasoning="A live SIEM investigation is required.",
-        tool_calls=[
-            ToolCall(
-                tool_name="sentinel_investigation",
-                arguments={},
-                reason="Investigate log ingestion.",
-            )
-        ],
-    )
-
-    assert result.tool_calls[0].tool_name == "sentinel_investigation"
+from app.agent.nodes.tool_executor import tool_executor_node
 
 
 def test_invalid_tool_rejected():
-    try:
-        ToolCall(
-            tool_name="unknown_tool",
-            arguments={},
-            reason="Invalid tool",
+    state = {
+        "tool_calls": [
+            {
+                "tool_name": "unknown_tool",
+                "arguments": {},
+            }
+        ],
+        "knowledge": [],
+        "tool_results": [],
+        "tool_errors": [],
+        "tool_execution_attempts": 0,
+        "max_tool_execution_attempts": 10,
+    }
+
+    with patch(
+        "app.agent.nodes.tool_executor.build_tool_registry"
+    ) as mock_factory:
+        registry = mock_factory.return_value
+        registry.get_definition.side_effect = ValueError(
+            "Unknown tool"
         )
-    except Exception:
-        return
 
-    raise AssertionError("Invalid tool should have been rejected.")
+        result = tool_executor_node(state)
 
-
-if __name__ == "__main__":
-    test_knowledge_selection()
-    test_sentinel_selection()
-    test_invalid_tool_rejected()
-
-    print("All tool selection model tests passed.")
+        assert len(result["tool_errors"]) == 1
+        assert result["tool_errors"][0]["tool"] == "unknown_tool"
+        registry.execute.assert_not_called()

@@ -8,7 +8,6 @@ from app.agent.nodes.kql_generator import kql_generator_node
 from app.agent.nodes.kql_validator import kql_validator_node
 from app.agent.nodes.outcomes import (
     mark_completed_node,
-    mark_failed_node,
     mark_incomplete_node,
     mark_kql_exhausted_node,
 )
@@ -19,116 +18,157 @@ from app.agent.state import InvestigationState
 
 
 MAX_KQL_CORRECTION_ATTEMPTS = 1
-DEFAULT_MAX_INVESTIGATION_STEPS = 5
+DEFAULT_MAX_TOOL_EXECUTION_ATTEMPTS = 10
+DEFAULT_MAX_INVESTIGATION_STEPS = 3
 
 
 def route_after_tool_selection(state: InvestigationState) -> str:
-    """Decide whether to execute tools or finish the investigation."""
+    """
+    Route selected tools for execution.
 
-    if state.get("execution_complete", False):
-        return "completed"
+    The selector cannot independently declare an investigation
+    successful. Its completion decision is sent to the evaluator.
+    """
 
-    if state.get("tool_calls"):
+    tool_calls = state.get("tool_calls", [])
+
+    tool_attempts = state.get("tool_execution_attempts", 0)
+    max_tool_attempts = state.get(
+        "max_tool_execution_attempts",
+        DEFAULT_MAX_TOOL_EXECUTION_ATTEMPTS,
+    )
+
+    if tool_calls and tool_attempts < max_tool_attempts:
         return "execute_tools"
 
-    # No valid tool calls and no completion decision.
-    return "incomplete"
+    # Evaluate existing evidence even when the selector has no
+    # more tools to execute or the execution budget is exhausted.
+    return "evaluate"
 
 
 def route_after_tool_execution(state: InvestigationState) -> str:
-    """Route pending graph capabilities to their workflows."""
-
     pending_capabilities = state.get("pending_capabilities", [])
 
     if "sentinel_investigation" in pending_capabilities:
-        return "sentinel_investigation"
+        investigation_attempts = state.get(
+            "investigation_attempts", 0
+        )
+        max_investigation_steps = state.get(
+            "max_investigation_steps",
+            DEFAULT_MAX_INVESTIGATION_STEPS,
+        )
+
+        if investigation_attempts < max_investigation_steps:
+            return "sentinel_investigation"
+
+        return "evaluate"
+
+    if state.get("tool_batch_complete") and (
+        state.get("tool_results") or state.get("tool_errors")
+    ):
+        return "evaluate"
 
     return "select_again"
 
 
 def route_after_kql_validation(state: InvestigationState) -> str:
-    if not state.get("query", "").strip():
+    """Validate generated KQL and control correction attempts."""
+
+    query = state.get("query") or ""
+
+    if not isinstance(query, str) or not query.strip():
         return "kql_exhausted"
 
     if state.get("kql_valid", False):
         return "investigator"
 
-    if (
-        state.get("kql_correction_attempts", 0)
-        < MAX_KQL_CORRECTION_ATTEMPTS
-    ):
+    correction_attempts = state.get(
+        "kql_correction_attempts",
+        0,
+    )
+
+    if correction_attempts <= MAX_KQL_CORRECTION_ATTEMPTS:
         return "retry"
 
     return "kql_exhausted"
 
 
 def route_after_evaluation(state: InvestigationState) -> str:
-    if state.get("investigation_status") == "failed":
-        return "failed"
+    """
+    Route based on whether the objective was answered,
+    not merely whether the agent has stopped investigating.
+    """
 
-    if not state.get("needs_more_investigation", False):
+    if state.get("investigation_complete", False):
         return "completed"
 
-    max_steps = state.get(
-        "max_investigation_steps",
-        DEFAULT_MAX_INVESTIGATION_STEPS,
-    )
-    attempts = state.get("investigation_attempts", 0)
+    if state.get("needs_more_investigation", False):
+        tool_attempts = state.get(
+            "tool_execution_attempts", 0
+        )
+        max_tool_attempts = state.get(
+            "max_tool_execution_attempts",
+            DEFAULT_MAX_TOOL_EXECUTION_ATTEMPTS,
+        )
 
-    if attempts >= max_steps:
-        return "incomplete"
+        if tool_attempts < max_tool_attempts:
+            return "select_again"
 
-    return "select_again"
+    return "incomplete"
 
 
 def build_investigation_graph():
     graph = StateGraph(InvestigationState)
 
-    # Existing investigation nodes
-    graph.add_node("knowledge_retriever", knowledge_retriever_node)
+    # Core investigation nodes.
+    graph.add_node(
+        "knowledge_retriever",
+        knowledge_retriever_node,
+    )
+
     graph.add_node("planner", planner_node)
+
     graph.add_node("kql_generator", kql_generator_node)
     graph.add_node("kql_validator", kql_validator_node)
     graph.add_node("investigator", investigator_node)
     graph.add_node("evaluator", evaluator_node)
 
-    # Dynamic tool nodes
+    # Dynamic tool orchestration.
     graph.add_node("tool_selector", tool_selector_node)
     graph.add_node("tool_executor", tool_executor_node)
 
-    # Outcome nodes
+    # Outcome nodes.
     graph.add_node("mark_completed", mark_completed_node)
     graph.add_node("mark_incomplete", mark_incomplete_node)
-    graph.add_node("mark_failed", mark_failed_node)
     graph.add_node("mark_kql_exhausted", mark_kql_exhausted_node)
 
-    # Initial workflow
+    # Initial workflow.
     graph.add_edge(START, "knowledge_retriever")
     graph.add_edge("knowledge_retriever", "planner")
     graph.add_edge("planner", "tool_selector")
 
-    # Dynamic tool selection
+    # Tool selection.
     graph.add_conditional_edges(
         "tool_selector",
         route_after_tool_selection,
         {
             "execute_tools": "tool_executor",
-            "completed": "mark_completed",
-            "incomplete": "mark_incomplete",
+            "evaluate": "evaluator",
         },
     )
 
-    # Tool execution and capability routing
+    # Tool execution.
     graph.add_conditional_edges(
         "tool_executor",
         route_after_tool_execution,
         {
             "sentinel_investigation": "kql_generator",
             "select_again": "tool_selector",
+            "evaluate": "evaluator",
         },
     )
 
-    # Existing KQL generation and validation pipeline
+    # Sentinel KQL workflow.
     graph.add_edge("kql_generator", "kql_validator")
 
     graph.add_conditional_edges(
@@ -141,8 +181,9 @@ def build_investigation_graph():
         },
     )
 
-    # Investigation and evaluation
+    # Investigation and evaluation.
     graph.add_edge("investigator", "evaluator")
+    graph.add_edge("mark_kql_exhausted", "evaluator")
 
     graph.add_conditional_edges(
         "evaluator",
@@ -151,14 +192,14 @@ def build_investigation_graph():
             "select_again": "tool_selector",
             "completed": "mark_completed",
             "incomplete": "mark_incomplete",
-            "failed": "mark_failed",
         },
     )
 
-    # Terminal outcomes
+    # Terminal outcomes.
     graph.add_edge("mark_completed", END)
     graph.add_edge("mark_incomplete", END)
-    graph.add_edge("mark_failed", END)
-    graph.add_edge("mark_kql_exhausted", END)
 
     return graph.compile()
+
+
+investigation_graph = build_investigation_graph()

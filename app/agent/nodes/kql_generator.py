@@ -254,6 +254,7 @@ def kql_generator_node(state: InvestigationState) -> dict:
     previous_query = state.get("query", "")
     next_reason = state.get("next_investigation_reason", "")
     investigation_attempts = state.get("investigation_attempts", 0)
+    correction_attempts = state.get("kql_correction_attempts", 0)
 
     # First, use retrieved knowledge. Discover the live schema if necessary.
     knowledge, discovery_error = _discover_schema_knowledge(
@@ -357,9 +358,16 @@ Specific unanswered question, if any:
 
 Previous validation errors:
 {json.dumps(errors, default=str)[:1500]}
+KQL CORRECTION ATTEMPTS:
+{correction_attempts}
 
 Investigation attempts completed:
 {investigation_attempts}
+
+
+Previous validation errors must be corrected.
+If the same query cannot be made safe, return an empty query
+and explain why in the reason field.
 
 Rules:
 1. Address the investigation objective, not unrelated questions.

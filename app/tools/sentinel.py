@@ -1,9 +1,16 @@
 
 from datetime import timedelta
 import logging
+import random
 import re
+import time
 
-from azure.core.exceptions import AzureError
+from azure.core.exceptions import (
+    AzureError,
+    HttpResponseError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
 from azure.identity import ClientSecretCredential
 from azure.monitor.query import (
     LogsQueryClient,
@@ -21,6 +28,19 @@ class SentinelQueryError(RuntimeError):
 
 
 class SentinelClient:
+    MAX_RETRIES = 3
+    BASE_DELAY = 2
+    MAX_DELAY = 30
+
+    RETRYABLE_STATUS_CODES = {
+        408,
+        429,
+        500,
+        502,
+        503,
+        504,
+    }
+
     def __init__(self) -> None:
         self.credential = ClientSecretCredential(
             tenant_id=settings.azure_tenant_id,
@@ -31,6 +51,49 @@ class SentinelClient:
         self.client = LogsQueryClient(self.credential)
         self.workspace_id = settings.azure_workspace_id
 
+    def _is_retryable_error(self, exc: AzureError) -> bool:
+        """Determine whether an Azure error is safe to retry."""
+
+        if isinstance(
+            exc,
+            (ServiceRequestError, ServiceResponseError),
+        ):
+            return True
+
+        if isinstance(exc, HttpResponseError):
+            status_code = getattr(exc, "status_code", None)
+
+            if status_code is None and exc.response is not None:
+                status_code = getattr(
+                    exc.response,
+                    "status_code",
+                    None,
+                )
+
+            return status_code in self.RETRYABLE_STATUS_CODES
+
+        return False
+
+    def _get_retry_after(self, exc: AzureError) -> float | None:
+        """Extract Retry-After from an Azure HTTP response."""
+
+        response = getattr(exc, "response", None)
+
+        if response is None:
+            return None
+
+        headers = getattr(response, "headers", {})
+
+        retry_after = headers.get("Retry-After")
+
+        if retry_after is None:
+            return None
+
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            return None
+
     def run_query(
         self,
         kql: str,
@@ -38,7 +101,8 @@ class SentinelClient:
         timespan: timedelta = timedelta(hours=1),
         server_timeout: int = 30,
     ) -> list[dict]:
-        """Execute a KQL query against the configured Log Analytics workspace."""
+        """Execute a KQL query with bounded retries."""
+
         if not kql or not kql.strip():
             raise ValueError("KQL query cannot be empty.")
 
@@ -47,23 +111,60 @@ class SentinelClient:
                 "server_timeout must be between 1 and 600 seconds."
             )
 
-        try:
-            response = self.client.query_workspace(
-                workspace_id=self.workspace_id,
-                query=kql,
-                timespan=timespan,
-                server_timeout=server_timeout,
-            )
-        except AzureError as exc:
-            # Avoid logging credentials or the full query.
-            logger.warning(
-                "Sentinel query request failed. Error type: %s",
-                type(exc).__name__,
-            )
-            raise SentinelQueryError(
-                "Sentinel query request failed. Check Azure permissions, "
-                "KQL syntax, and service availability."
-            ) from exc
+        response = None
+
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                response = self.client.query_workspace(
+                    workspace_id=self.workspace_id,
+                    query=kql,
+                    timespan=timespan,
+                    server_timeout=server_timeout,
+                )
+                break
+
+            except AzureError as exc:
+                logger.warning(
+                    "Sentinel query request failed. "
+                    "Attempt %d/%d. Error type: %s",
+                    attempt + 1,
+                    self.MAX_RETRIES + 1,
+                    type(exc).__name__,
+                )
+
+                if not self._is_retryable_error(exc):
+                    raise SentinelQueryError(
+                        "Sentinel query failed with a non-retryable "
+                        "Azure error. Check authentication, permissions, "
+                        "and KQL syntax."
+                    ) from exc
+
+                if attempt >= self.MAX_RETRIES:
+                    raise SentinelQueryError(
+                        "Sentinel query failed after exhausting retries."
+                    ) from exc
+
+                retry_after = self._get_retry_after(exc)
+
+                if retry_after is not None:
+                    delay = min(retry_after, self.MAX_DELAY)
+                else:
+                    exponential_delay = (
+                        self.BASE_DELAY * (2 ** attempt)
+                    )
+                    jitter = random.uniform(0, 0.5)
+
+                    delay = min(
+                        exponential_delay + jitter,
+                        self.MAX_DELAY,
+                    )
+
+                logger.info(
+                    "Retrying Sentinel query in %.2f seconds.",
+                    delay,
+                )
+
+                time.sleep(delay)
 
         if response.status == LogsQueryStatus.PARTIAL:
             logger.warning("Sentinel returned partial query results.")
@@ -105,6 +206,7 @@ class SentinelClient:
         Only a simple KQL table identifier is accepted. Arbitrary query text
         is never accepted as a table name.
         """
+
         if not re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*",
             table_name,

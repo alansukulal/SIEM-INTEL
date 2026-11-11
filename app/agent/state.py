@@ -19,6 +19,9 @@ class InvestigationState(TypedDict):
     needs_more_investigation: bool
     next_investigation_reason: str
     investigation_outcome: str
+    evidence_sufficient: bool
+    evidence_assessment: str
+    missing_evidence: list[str]
 
     # KQL validation and correction
     kql_valid: bool
