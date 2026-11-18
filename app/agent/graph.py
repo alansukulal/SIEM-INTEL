@@ -117,7 +117,7 @@ def route_after_evaluation(state: InvestigationState) -> str:
     return "incomplete"
 
 
-def build_investigation_graph():
+def build_investigation_graph(checkpointer=None):
     graph = StateGraph(InvestigationState)
 
     # Core investigation nodes.
@@ -199,7 +199,7 @@ def build_investigation_graph():
     graph.add_edge("mark_completed", END)
     graph.add_edge("mark_incomplete", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 investigation_graph = build_investigation_graph()

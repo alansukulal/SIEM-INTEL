@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     openai_api_key: str
     tavily_api_key: str | None = None
 
+    database_url: str
+
+
 
     model_config = SettingsConfigDict(
         env_file=".env",
