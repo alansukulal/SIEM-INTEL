@@ -1,18 +1,15 @@
-import os
 
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-load_dotenv()
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
+from app.services.investigation_service import engine
 
 
-def get_conversation_history(tenant_id, investigation_id):
+def get_conversation_history(
+    tenant_id: str,
+    investigation_id: str,
+) -> list[dict[str, str]]:
 
     with engine.connect() as connection:
-
         messages = connection.execute(
             text("""
                 SELECT role, content
@@ -23,20 +20,25 @@ def get_conversation_history(tenant_id, investigation_id):
             """),
             {
                 "tenant_id": tenant_id,
-                "investigation_id": investigation_id
-            }
+                "investigation_id": investigation_id,
+            },
         ).mappings().all()
 
     return [
         {
             "role": message["role"],
-            "content": message["content"]
+            "content": message["content"],
         }
         for message in messages
     ]
 
 
-def save_message(tenant_id, investigation_id, role, content):
+def save_message(
+    tenant_id: str,
+    investigation_id: str,
+    role: str,
+    content: str,
+) -> None:
 
     if role not in ("user", "assistant", "system", "tool"):
         raise ValueError("Invalid message role")
@@ -53,8 +55,6 @@ def save_message(tenant_id, investigation_id, role, content):
                 "tenant_id": tenant_id,
                 "investigation_id": investigation_id,
                 "role": role,
-                "content": content
-            }
+                "content": content,
+            },
         )
-
-    print(f"{role} message saved successfully")

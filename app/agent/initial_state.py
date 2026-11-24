@@ -5,13 +5,17 @@ from typing import Any
 def create_initial_state(
     alert: str,
     siem: str,
-    tenant_id: str = "local-dev",
+    tenant_id: str,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
         # Request context
         "tenant_id": tenant_id,
         "alert": alert.strip(),
         "siem": siem.strip(),
+
+        # Conversation context
+        "conversation_history": conversation_history or [],
 
         # Planning and evidence
         "plan": "",
@@ -24,6 +28,9 @@ def create_initial_state(
         "needs_more_investigation": False,
         "next_investigation_reason": "",
         "investigation_outcome": "pending",
+        "evidence_sufficient": False,
+        "evidence_assessment": "",
+        "missing_evidence": [],
 
         # KQL validation
         "kql_valid": False,

@@ -7,6 +7,7 @@ class InvestigationState(TypedDict):
     tenant_id: str
     alert: str
     siem: str
+    conversation_history: list[dict[str, str]]
 
     # Investigation planning and evidence
     plan: str
@@ -42,6 +43,7 @@ class InvestigationState(TypedDict):
     investigation_status: str
     investigation_error: str
     investigation_history: list[dict[str, Any]]
+    
 
     # Dynamic capabilities
     available_tools: list[str]

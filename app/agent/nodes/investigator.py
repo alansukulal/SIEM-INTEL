@@ -4,7 +4,9 @@ from typing import Any
 
 from app.agent.state import InvestigationState
 from app.tools.sentinel import SentinelClient, SentinelQueryError
-
+from app.services.tenant_integration_service import (
+    get_tenant_integration,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -44,7 +46,17 @@ def investigator_node(state: InvestigationState) -> dict:
         }
 
     try:
-        sentinel = SentinelClient()
+        tenant_id = state.get("tenant_id")
+
+        if not tenant_id:
+            raise ValueError("Investigation tenant_id is missing.")
+
+        integration = get_tenant_integration(
+            tenant_id=tenant_id,
+            siem_type="microsoft_sentinel",
+        )
+
+        sentinel = SentinelClient(integration)
         results = sentinel.run_query(query)
 
         history.append({

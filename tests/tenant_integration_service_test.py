@@ -9,6 +9,13 @@ def main():
         tenant_id=OUTSEER_TENANT_ID,
         siem_type="microsoft_sentinel",
     )
+    try:
+        get_tenant_integration(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            siem_type="microsoft_sentinel",
+        )
+    except ValueError as exc:
+        print("Tenant isolation working:", exc)
 
     print("Tenant integration retrieved successfully")
     print("Tenant ID:", integration["tenant_id"])

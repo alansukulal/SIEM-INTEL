@@ -17,8 +17,6 @@ from azure.monitor.query import (
     LogsQueryStatus,
 )
 
-from app.config import settings
-
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +39,15 @@ class SentinelClient:
         504,
     }
 
-    def __init__(self) -> None:
+    def __init__(self, integration: dict) -> None:
         self.credential = ClientSecretCredential(
-            tenant_id=settings.azure_tenant_id,
-            client_id=settings.azure_client_id,
-            client_secret=settings.azure_client_secret,
+            tenant_id=integration["azure_tenant_id"],
+            client_id=integration["client_id"],
+            client_secret=integration["client_secret"],
         )
 
         self.client = LogsQueryClient(self.credential)
-        self.workspace_id = settings.azure_workspace_id
+        self.workspace_id = integration["workspace_id"]
 
     def _is_retryable_error(self, exc: AzureError) -> bool:
         """Determine whether an Azure error is safe to retry."""

@@ -4,6 +4,10 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from app.config import settings
 from app.agent.graph import build_investigation_graph
 from app.agent.initial_state import create_initial_state
+from app.services.conversation_service import (
+    get_conversation_history,
+    save_message,
+)
 
 
 def get_checkpoint_database_url() -> str:
@@ -23,10 +27,26 @@ def run_investigation(
     siem: str,
 ) -> dict:
 
+    # 1. Save the incoming user message.
+    save_message(
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        role="user",
+        content=alert,
+    )
+
+    # 2. Retrieve the conversation history.
+    conversation_history = get_conversation_history(
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+    )
+
+    # 3. Create the initial graph state with conversation context.
     initial_state = create_initial_state(
         alert=alert,
         siem=siem,
         tenant_id=tenant_id,
+        conversation_history=conversation_history,
     )
 
     config = {
@@ -52,6 +72,17 @@ def run_investigation(
             config=config,
         )
 
+    finding = result.get("finding", "")
+
+    # 4. Save the assistant's response.
+    if finding:
+        save_message(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            role="assistant",
+            content=finding,
+        )
+
     return {
         "investigation_id": investigation_id,
         "thread_id": thread_id,
@@ -59,7 +90,7 @@ def run_investigation(
         "siem": result.get("siem", siem),
         "plan": result.get("plan", ""),
         "evidence": result.get("evidence", []),
-        "finding": result.get("finding", ""),
+        "finding": finding,
         "investigation_outcome": result.get(
             "investigation_outcome", "unknown"
         ),

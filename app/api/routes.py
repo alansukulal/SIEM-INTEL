@@ -9,6 +9,11 @@ from app.services.investigation_service import (
     create_investigation,
     engine,
 )
+from app.services.investigation_service import (
+    create_investigation,
+    update_investigation_status,
+    engine,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -24,7 +29,6 @@ def health():
         "status": "healthy",
         "service": "SIEM-INTEL",
     }
-
 
 @router.post("/investigations")
 def create_new_investigation(request: InvestigationRequest):
@@ -54,13 +58,42 @@ def create_new_investigation(request: InvestigationRequest):
         alert=request.alert,
     )
 
-    # Execute the existing SIEM-INTEL graph.
-    result = run_investigation(
-        tenant_id=str(investigation["tenant_id"]),
-        investigation_id=str(investigation["id"]),
-        thread_id=investigation["thread_id"],
-        alert=request.alert,
-        siem=request.siem,
-    )
+    investigation_id = str(investigation["id"])
+    tenant_id = str(investigation["tenant_id"])
+    thread_id = investigation["thread_id"]
 
-    return result
+    try:
+        # Execute the existing SIEM-INTEL graph.
+        result = run_investigation(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            thread_id=thread_id,
+            alert=request.alert,
+            siem=request.siem,
+        )
+
+        # Mark investigation as completed.
+        update_investigation_status(
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            status="completed",
+        )
+
+        return result
+
+    except Exception as exc:
+
+        try:
+            update_investigation_status(
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                status="failed",
+            )
+        except Exception:
+            # Preserve the original investigation error.
+            pass
+
+        raise HTTPException(
+            status_code=500,
+            detail="Investigation execution failed",
+        ) from exc

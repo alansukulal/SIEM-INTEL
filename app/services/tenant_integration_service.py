@@ -2,12 +2,16 @@
 from sqlalchemy import create_engine, text
 
 from app.config import settings
+from app.services.keyvault_service import KeyVaultService
 
 
 engine = create_engine(settings.database_url)
 
 
-def get_tenant_integration(tenant_id: str, siem_type: str) -> dict:
+def get_tenant_integration(
+    tenant_id: str,
+    siem_type: str,
+) -> dict:
     with engine.connect() as connection:
         integration = connection.execute(
             text("""
@@ -38,23 +42,20 @@ def get_tenant_integration(tenant_id: str, siem_type: str) -> dict:
 
     integration = dict(integration)
 
-    if integration["credential_source"] == "environment":
-        if settings.environment != "development":
-            raise ValueError(
-                "Environment-based customer credentials are only "
-                "allowed in development"
-            )
-
-        # Development-only: these environment credentials currently
-        # belong to the registered Outseer integration.
-        integration["client_secret"] = settings.azure_client_secret
-
-    elif integration["credential_source"] == "key_vault":
-        raise NotImplementedError(
-            "Key Vault credential retrieval has not been implemented yet"
+    if integration["credential_source"] != "key_vault":
+        raise ValueError(
+            "Only Key Vault credential storage is supported"
         )
 
-    else:
-        raise ValueError("Unsupported credential source")
+    if not integration["secret_name"]:
+        raise ValueError(
+            "Key Vault secret name is missing for this integration"
+        )
+
+    keyvault = KeyVaultService()
+
+    integration["client_secret"] = keyvault.get_secret(
+        integration["secret_name"]
+    )
 
     return integration
