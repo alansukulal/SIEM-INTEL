@@ -309,6 +309,10 @@ Return:
         prompt,
         EvaluationResult,
     )
+    print("\n========== EVALUATOR RAW RESULT ==========")
+    print(result.model_dump_json(indent=2))
+    print("==========================================\n")
+        
 
     # Enforce tool budgets in application code.
     

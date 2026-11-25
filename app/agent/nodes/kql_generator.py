@@ -10,7 +10,9 @@ from app.agent.state import InvestigationState
 from app.llm.client import LLMClient
 from app.models.kql import KQLGenerationResult
 from app.tools.sentinel import SentinelClient, SentinelQueryError
-
+from app.services.tenant_integration_service import (
+    get_tenant_integration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +28,26 @@ def _format_evidence(
     return json.dumps(evidence[:limit], default=str)[:2500]
 
 
+
 def _extract_requested_table(alert: str) -> str | None:
-    """Extract a simple table identifier explicitly mentioned in the alert."""
+    """Extract an explicitly mentioned Sentinel table identifier."""
+
     patterns = [
         r"\btable\s+([A-Za-z_][A-Za-z0-9_]*)\b",
         r"\bon\s+([A-Za-z_][A-Za-z0-9_]*)\s+table\b",
         r"\b([A-Za-z_][A-Za-z0-9_]*_CL)\b",
+        r"\b(?:logs?|events?|records?)\s+"
+        r"(?:in|from|for)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
     ]
 
     for pattern in patterns:
         match = re.search(pattern, alert, flags=re.IGNORECASE)
+
         if match:
             return match.group(1)
 
     return None
+
 
 
 def _get_known_schema_tables(knowledge: list[dict]) -> set[str]:
@@ -70,17 +78,27 @@ def _get_known_schema_tables(knowledge: list[dict]) -> set[str]:
 
 
 def _discover_schema_knowledge(
-    alert: str,
+    requested_table: str | None,
     knowledge: list[dict],
+    tenant_id: str,
 ) -> tuple[list[dict], str | None]:
     """
     Discover live Sentinel schema when the requested table is not
     documented in the retrieved table-schema knowledge.
     """
-    requested_table = _extract_requested_table(alert)
 
     if not requested_table:
         return knowledge, None
+
+    # Validate the planner-provided identifier before using it.
+    if not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*",
+        requested_table,
+    ):
+        return (
+            knowledge,
+            f"Invalid candidate table identifier: {requested_table!r}.",
+        )
 
     known_tables = _get_known_schema_tables(knowledge)
 
@@ -100,7 +118,16 @@ def _discover_schema_knowledge(
     )
 
     try:
-        schema = SentinelClient().get_table_schema(requested_table)
+        if not tenant_id:
+            raise ValueError("Investigation tenant_id is missing.")
+
+        integration = get_tenant_integration(
+            tenant_id=tenant_id,
+            siem_type="microsoft_sentinel",
+        )
+
+        sentinel = SentinelClient(integration)
+        schema = sentinel.get_table_schema(requested_table)
 
     except (SentinelQueryError, ValueError, AzureError) as exc:
         logger.warning(
@@ -250,16 +277,56 @@ def kql_generator_node(state: InvestigationState) -> dict:
     knowledge = list(state.get("knowledge", []))
     history = state.get("investigation_history", [])
     evidence = state.get("evidence", [])
+    conversation_history = state.get("conversation_history", [])
+    # Remove the current request if it is already present
+# in the conversation history.
+    previous_messages = conversation_history
+
+    if (
+        previous_messages
+        and previous_messages[-1].get("role") == "user"
+        and previous_messages[-1].get("content", "").strip()
+        == alert.strip()
+    ):
+        previous_messages = previous_messages[:-1]
+
+    conversation_context = json.dumps(
+        previous_messages[-8:],
+        default=str,
+    )[:3000]
 
     previous_query = state.get("query", "")
     next_reason = state.get("next_investigation_reason", "")
     investigation_attempts = state.get("investigation_attempts", 0)
     correction_attempts = state.get("kql_correction_attempts", 0)
+    # Parse the planner's structured investigation plan.
+    raw_plan = state.get("plan", "")
+
+    try:
+        plan = json.loads(raw_plan) if raw_plan else {}
+    except (json.JSONDecodeError, TypeError):
+        plan = {}
+
+    candidate_tables = plan.get("candidate_tables", [])
+
+    if not isinstance(candidate_tables, list):
+        candidate_tables = []
+
+    # Use the planner's proposed table names first.
+    # Fall back to alert extraction for backward compatibility.
+    requested_table = (
+        candidate_tables[0]
+        if candidate_tables
+        else _extract_requested_table(alert)
+    )
+        
+
 
     # First, use retrieved knowledge. Discover the live schema if necessary.
     knowledge, discovery_error = _discover_schema_knowledge(
-        alert,
+        requested_table,
         knowledge,
+        state.get("tenant_id","")
     )
 
     if discovery_error:
@@ -269,8 +336,6 @@ def kql_generator_node(state: InvestigationState) -> dict:
             "knowledge": knowledge,
             "kql_attempts": state.get("kql_attempts", 0) + 1,
         }
-
-    requested_table = _extract_requested_table(alert)
 
     # The planner stores its structured plan as JSON text.
     raw_plan = state.get("plan", "")
@@ -334,6 +399,8 @@ SIEM:
 
 Original alert or question:
 {alert}
+Previous conversation context:
+{conversation_context}
 
 Investigation plan:
 {plan_context}
@@ -398,6 +465,13 @@ Rules:
 19. Correct previous validation errors when possible.
 20. Do not invent data, table names, columns, or findings.
 21. Do not include Markdown code fences.
+22. Use previous conversation messages to resolve references to tables,
+    time ranges, and investigation objectives.
+23. Treat previous assistant findings as context, not as newly verified
+    Sentinel evidence.
+24. The current user request takes priority over previous requests.
+25. Preserve the original investigation context when the current request
+    is a follow-up.
 
 Return the query in the kql field and a concise explanation in the reason field.
 """

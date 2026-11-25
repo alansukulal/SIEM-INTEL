@@ -65,3 +65,5 @@ class InvestigationState(TypedDict):
     # Completion tracking
     execution_complete: bool
     tool_batch_complete: bool
+    investigation_complete: bool
+

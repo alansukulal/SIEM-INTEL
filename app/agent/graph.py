@@ -98,6 +98,11 @@ def route_after_evaluation(state: InvestigationState) -> str:
     Route based on whether the objective was answered,
     not merely whether the agent has stopped investigating.
     """
+    print("\n========== ROUTER DEBUG ==========")
+    print("investigation_complete:", state.get("investigation_complete"))
+    print("evidence_sufficient:", state.get("evidence_sufficient"))
+    print("needs_more_investigation:", state.get("needs_more_investigation"))
+    print("=================================\n")
 
     if state.get("investigation_complete", False):
         return "completed"

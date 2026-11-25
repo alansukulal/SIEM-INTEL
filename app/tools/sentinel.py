@@ -123,6 +123,13 @@ class SentinelClient:
 
             except AzureError as exc:
                 logger.warning(
+                    "Sentinel Azure diagnostic: status_code=%s, "
+                    "error_code=%s, message=%s",
+                    getattr(exc, "status_code", None),
+                    getattr(exc, "error_code", None),
+                    str(exc)[:1000],
+                )
+                logger.warning(
                     "Sentinel query request failed. "
                     "Attempt %d/%d. Error type: %s",
                     attempt + 1,

@@ -7,6 +7,17 @@ class InvestigationPlan(BaseModel):
         description="The specific question the investigation must answer."
     )
 
+    candidate_tables: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Candidate SIEM tables that may contain the evidence needed "
+            "for this investigation. Use table names supported by retrieved "
+            "knowledge or conversation context. Return an empty list when "
+            "no SIEM table is required. These tables must be schema-verified "
+            "before KQL generation."
+        )
+    )
+
     evidence_needed: list[str] = Field(
         description=(
             "The minimum evidence needed to answer the objective. "
